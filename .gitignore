@@ -1,0 +1,54 @@
+# Node.js / Express standard ignores
+node_modules/
+.npm/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Logs
+logs/
+*.log
+log.txt
+pids/
+*.pid
+*.seed
+*.pid.lock
+
+# Runtime data
+.tmp/
+tmp/
+.cache/
+coverage/
+.nyc_output/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Env and secrets
+.env
+.env.*
+!.env.example
+*.local
+
+# Build artifacts
+build/
+dist/
+.out/
+.next/
+
+# IDE/editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Debug
+node-inspect*
+
+# Misc
+package-lock.json
+# If you use yarn or pnpm lockfiles instead, un-ignore them accordingly
+# yarn.lock
+# pnpm-lock.yaml

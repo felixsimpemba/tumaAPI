@@ -1,0 +1,124 @@
+#!/usr/bin/env node
+
+/**
+ * Module dependencies.
+ */
+
+// Ensure environment variables are loaded before anything else
+const config = require('../config/env');
+
+var app = require('../app');
+var debug = require('debug')('tumaapi:server');
+var http = require('http');
+var { checkConnection } = require('../config/db');
+
+/**
+ * Get port from environment and store in Express.
+ */
+
+var port = normalizePort(process.env.PORT || '3000');
+app.set('port', port);
+
+/**
+ * Create HTTP server.
+ */
+
+var server = http.createServer(app);
+
+/**
+ * Listen on provided port, on all network interfaces.
+ */
+
+checkConnection()
+  .then(() => {
+    server.listen(port);
+    server.on('error', onError);
+    server.on('listening', onListening);
+    console.log('[server] Database connected. Server is starting...');
+  })
+  .catch((err) => {
+    console.error('[server] Database connection failed. Server not started.');
+    const msg = (err && (err.message || String(err))) || '';
+    console.error(msg || err);
+    // Provide a clear hint for common MySQL auth plugin issues if not already included
+    const looksLikeAuthPluginIssue = /unknown plugin/i.test(msg) || /auth_gssapi_client/i.test(msg) || ((/plugin/i.test(msg)) && (/auth/i.test(msg)));
+    if (looksLikeAuthPluginIssue && !/Docs\/mysql-auth-plugins\.md/i.test(msg)) {
+      console.error('Hint: MySQL authentication plugin not supported by mysql2/Sequelize. Switch the DB user to mysql_native_password or caching_sha2_password. See Docs/mysql-auth-plugins.md for steps.');
+    }
+    // Print non-sensitive DB config summary to help diagnose
+    try {
+      const u = config?.db?.user || '';
+      const maskedUser = u ? (u.length <= 2 ? '*'.repeat(u.length) : u[0] + '*'.repeat(Math.max(1, u.length - 2)) + u[u.length - 1]) : '(unset)';
+      const summary = {
+        dialect: config?.db?.dialect,
+        host: config?.db?.host,
+        port: config?.db?.port,
+        user: maskedUser,
+        database: config?.db?.name,
+        usingUrl: !!config?.db?.url,
+        ssl: !!config?.db?.ssl,
+      };
+      console.error('[server] DB config summary (non-sensitive):', summary);
+    } catch (_) {}
+    process.exit(1);
+  });
+
+/**
+ * Normalize a port into a number, string, or false.
+ */
+
+function normalizePort(val) {
+  var port = parseInt(val, 10);
+
+  if (isNaN(port)) {
+    // named pipe
+    return val;
+  }
+
+  if (port >= 0) {
+    // port number
+    return port;
+  }
+
+  return false;
+}
+
+/**
+ * Event listener for HTTP server "error" event.
+ */
+
+function onError(error) {
+  if (error.syscall !== 'listen') {
+    throw error;
+  }
+
+  var bind = typeof port === 'string'
+    ? 'Pipe ' + port
+    : 'Port ' + port;
+
+  // handle specific listen errors with friendly messages
+  switch (error.code) {
+    case 'EACCES':
+      console.error(bind + ' requires elevated privileges');
+      process.exit(1);
+      break;
+    case 'EADDRINUSE':
+      console.error(bind + ' is already in use');
+      process.exit(1);
+      break;
+    default:
+      throw error;
+  }
+}
+
+/**
+ * Event listener for HTTP server "listening" event.
+ */
+
+function onListening() {
+  var addr = server.address();
+  var bind = typeof addr === 'string'
+    ? 'pipe ' + addr
+    : 'port ' + addr.port;
+  debug('Listening on ' + bind);
+}

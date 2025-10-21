@@ -1,0 +1,24 @@
+{
+  "name": "tumaapi",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "start": "node ./bin/www",
+    "dev": "node ./bin/www",
+    "db:sync": "node ./scripts/sync-db.js",
+    "db:sync:force": "FORCE_SYNC=true node ./scripts/sync-db.js"
+  },
+  "dependencies": {
+    "cookie-parser": "~1.4.4",
+    "debug": "~2.6.9",
+    "dotenv": "^16.4.5",
+    "express": "~4.16.1",
+    "http-errors": "~1.6.3",
+    "jsonwebtoken": "^9.0.2",
+    "morgan": "~1.9.1",
+    "mysql2": "^3.11.3",
+    "pug": "2.0.0-beta11",
+    "sequelize": "^6.37.3",
+    "swagger-ui-express": "^5.0.1"
+  }
+}
