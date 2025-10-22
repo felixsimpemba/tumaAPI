@@ -8,6 +8,8 @@ var indexRouter = require('./routes/index');
 var usersRouter = require('./routes/users');
 var authRouter = require('./routes/auth');
 var driversRouter = require('./routes/drivers');
+var tripsRouter = require('./routes/trips');
+var paymentsRouter = require('./routes/payments');
 
 // Swagger
 var swaggerUi = require('swagger-ui-express');
@@ -29,6 +31,8 @@ app.use('/', indexRouter);
 app.use('/users', usersRouter);
 app.use('/auth', authRouter);
 app.use('/drivers', driversRouter);
+app.use('/trips', tripsRouter);
+app.use('/payments', paymentsRouter);
 
 // OpenAPI docs
 app.get('/docs.json', function(req, res) {
