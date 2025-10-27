@@ -25,6 +25,16 @@ app.set('port', port);
 
 var server = http.createServer(app);
 
+// Initialize Socket.IO ride management
+try {
+  const initRideManagement = require('../sockets/rideManagement');
+  const io = initRideManagement(server);
+  app.set('io', io); // optionally expose on app if needed elsewhere
+  console.log('[sockets] Ride management WebSocket initialized');
+} catch (e) {
+  console.error('[sockets] Failed to initialize ride management sockets:', e?.message || e);
+}
+
 /**
  * Listen on provided port, on all network interfaces.
  */

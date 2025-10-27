@@ -60,7 +60,7 @@ async function checkConnection() {
       if (config.db.dialect === 'mysql' && (looksLikeAuthPluginIssue || isAccessDenied)) {
         const hints = [];
         if (looksLikeAuthPluginIssue) {
-          hints.push('MySQL authentication plugin not supported by mysql2/Sequelize. Switch the DB user to mysql_native_password or caching_sha2_password. See Docs/mysql-auth-plugins.md for steps.');
+          hints.push('MySQL authentication plugin not supported by mysql2/Sequelize. Switch the DB user to mysql_native_password or caching_sha2_password. See Docs/rideManagement.md for steps.');
         }
         if (isAccessDenied) {
           const pwNote = (config.db.password === '' || config.db.password === undefined) ? ' It looks like DB_PASSWORD may be empty; ensure the correct password is set.' : '';
