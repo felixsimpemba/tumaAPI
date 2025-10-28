@@ -1,423 +1,317 @@
 // Socket.IO Ride Management implementation
-// Follows Docs/rideManagement.md
+// Follows Docs/websocket_api_docs.md with database integration
+// Refactored to use modular services
 
 const { Server } = require('socket.io');
 
-// Configuration with env fallbacks
-const SEARCH_RADIUS_KM = parseFloat(process.env.SEARCH_RADIUS_KM || '5');
-const DRIVER_RESPONSE_TIMEOUT = parseInt(process.env.DRIVER_RESPONSE_TIMEOUT || '30000', 10);
-const BASE_FARE = parseFloat(process.env.BASE_FARE || '3');
-const PER_KM_RATE = parseFloat(process.env.PER_KM_RATE || '1.5');
+// Import ride services
+const fareService = require('../services/ride/fareCalculationService');
+const driverMatchingService = require('../services/ride/driverMatchingService');
+const rideRequestService = require('../services/ride/rideRequestService');
+const rideStatusService = require('../services/ride/rideStatusService');
+const locationService = require('../services/ride/locationTrackingService');
+const notificationService = require('../services/ride/notificationService');
 
-// Haversine distance in kilometers
-function distanceKm(a, b) {
-  const toRad = (x) => (x * Math.PI) / 180;
-  const R = 6371; // km
-  const dLat = toRad(b.lat - a.lat);
-  const dLon = toRad(b.lng - a.lng);
-  const lat1 = toRad(a.lat);
-  const lat2 = toRad(b.lat);
-  const sinDLat = Math.sin(dLat / 2);
-  const sinDLon = Math.sin(dLon / 2);
-  const h = sinDLat * sinDLat + Math.cos(lat1) * Math.cos(lat2) * sinDLon * sinDLon;
-  return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)));
-}
-
-function fareEstimate(distanceKmVal) {
-  const fare = BASE_FARE + PER_KM_RATE * (distanceKmVal || 0);
-  return fare.toFixed(2);
-}
-
-// In-memory stores (simple; replace with DB/Redis in prod)
-const drivers = new Map(); // driverId -> { socketId, location, status: 'available'|'busy'|'offline', activeRideId }
-const riders = new Map(); // riderId -> { socketId }
-const rides = new Map(); // rideId -> ride object
-
-// Ride object shape reference:
-// {
-//   id, riderId, pickup, destination, distance, estimatedFare,
-//   status: 'searching'|'accepted'|'in_progress'|'completed'|'cancelled'|'failed',
-//   assignedDriverId, queue: [driverId...], timeouts: { current: Timeout },
-// }
-
-function generateRideId(riderId) {
-  return `ride_${Date.now()}_${riderId}`;
-}
-
-function getSocketById(io, socketId) {
-  return io.sockets.sockets.get(socketId);
-}
-
-function buildDriverPublicInfo(driver) {
-  return {
-    id: driver.driverId,
-    location: driver.location,
-  };
-}
-
-function initRideManagement(server) {
+function initRideManagement(server, models) {
   const io = new Server(server, {
     cors: { origin: '*', methods: ['GET', 'POST'] },
     path: '/socket.io',
   });
 
-  function emitError(socket, message) {
-    try { socket.emit('error', { message }); } catch (_) {}
-  }
+  // In-memory stores for socket management
+  const driverSockets = new Map(); // driverId -> socketId
+  const riderSockets = new Map(); // userId -> socketId
+  const activeRides = new Map(); // rideRequestId -> { timeouts, queue }
 
-  function sendRequestToNextDriver(io, ride) {
-    // Clear any existing timeout
-    if (ride.timeouts && ride.timeouts.current) {
-      clearTimeout(ride.timeouts.current);
-      ride.timeouts.current = null;
-    }
-
-    while (ride.queue.length > 0) {
-      const nextDriverId = ride.queue.shift();
-      const driver = drivers.get(nextDriverId);
-      if (!driver || driver.status !== 'available') {
-        continue;
-      }
-      // mark driver as pending for this ride
-      driver.status = 'busy'; // temporarily busy during request window
-      driver.pendingRideId = ride.id;
-      // send request
-      const driverSocket = getSocketById(io, driver.socketId);
-      if (!driverSocket) {
-        // driver offline
-        driver.status = 'offline';
-        driver.pendingRideId = null;
-        continue;
-      }
-      driverSocket.emit('ride:request', {
-        rideId: ride.id,
-        pickup: ride.pickup,
-        destination: ride.destination,
-        distance: ride.distance,
-        estimatedFare: ride.estimatedFare,
-        riderId: ride.riderId,
-      });
-      // start timeout
-      ride.timeouts.current = setTimeout(() => {
-        // let this driver know the request expired
-        const dSock = getSocketById(io, driver.socketId);
-        if (dSock) {
-          dSock.emit('ride:expired', { rideId: ride.id });
-        }
-        // free driver back to available if not accepted
-        if (driver.pendingRideId === ride.id && ride.status === 'searching') {
-          driver.status = 'available';
-          driver.pendingRideId = null;
-        }
-        // try next
-        sendRequestToNextDriver(io, ride);
-      }, DRIVER_RESPONSE_TIMEOUT);
-
-      return; // waiting for response from this driver
-    }
-
-    // no drivers left
-    ride.status = 'failed';
-    const rider = riders.get(ride.riderId);
-    if (rider) {
-      const riderSocket = getSocketById(io, rider.socketId);
+  // Helper to handle no drivers scenario
+  async function handleNoDriversAvailable(requestId, riderId) {
+    await rideRequestService.markRideRequestFailed(models, requestId);
+    
+    const riderSocketId = riderSockets.get(riderId);
+    if (riderSocketId) {
+      const riderSocket = notificationService.getSocketById(io, riderSocketId);
       if (riderSocket) {
-        riderSocket.emit('ride:no_drivers', {
-          rideId: ride.id,
-          message: 'No drivers available in your area',
-        });
+        notificationService.notifyNoDrivers(riderSocket, requestId);
       }
     }
   }
 
   io.on('connection', (socket) => {
-    // DRIVER REGISTER
-    socket.on('driver:connect', (data) => {
-      const { driverId, location } = data || {};
-      if (!driverId) return emitError(socket, 'Driver not registered');
-      drivers.set(driverId, {
-        driverId,
-        socketId: socket.id,
-        location: location || null,
-        status: 'available',
-        activeRideId: null,
-        pendingRideId: null,
-      });
-      socket.data.role = 'driver';
-      socket.data.driverId = driverId;
-      if (location) socket.data.location = location;
-      socket.emit('driver:connected', { driverId, status: 'available' });
-    });
+    console.log(`Socket connected: ${socket.id}`);
 
-    // RIDER REGISTER
-    socket.on('rider:connect', (data) => {
-      const { riderId } = data || {};
-      if (!riderId) return emitError(socket, 'Rider not registered');
-      riders.set(riderId, { riderId, socketId: socket.id });
-      socket.data.role = 'rider';
-      socket.data.riderId = riderId;
-      socket.emit('rider:connected', { riderId });
-    });
+    // USER_CONNECT EVENT - Universal connection handler
+    socket.on('user_connect', async (data) => {
+      const { userId, role } = data || {};
+      if (!userId || !role) {
+        return notificationService.emitError(socket, 'userId and role required');
+      }
 
-    // DRIVER UPDATE LOCATION
-    socket.on('driver:update_location', (data) => {
-      const { location } = data || {};
-      const driverId = socket.data.driverId;
-      if (!driverId || !drivers.has(driverId)) return emitError(socket, 'Driver not registered');
-      const d = drivers.get(driverId);
-      d.location = location || d.location;
-      socket.data.location = d.location;
-      // If on active ride, forward to rider
-      const rideId = d.activeRideId;
-      if (rideId) {
-        const ride = rides.get(rideId);
-        if (ride) {
-          const rider = riders.get(ride.riderId);
-          if (rider) {
-            const riderSocket = getSocketById(io, rider.socketId);
-            if (riderSocket) {
-              riderSocket.emit('driver:location', { location: d.location, rideId });
-            }
-          }
+      if (role === 'customer') {
+        // Register rider
+        riderSockets.set(userId, socket.id);
+        socket.data.role = 'customer';
+        socket.data.userId = userId;
+        notificationService.confirmConnection(socket, socket.id);
+      } else if (role === 'driver') {
+        // Register driver - find driver ID from userId
+        const { Driver } = models;
+        const driver = await Driver.findOne({ where: { userId } });
+        if (!driver) {
+          return notificationService.emitError(socket, 'Driver not found');
         }
+
+        driverSockets.set(driver.id, socket.id);
+        socket.data.role = 'driver';
+        socket.data.userId = userId;
+        socket.data.driverId = driver.id;
+
+        // Initialize driver heartbeat
+        await locationService.initializeDriverHeartbeat(models, driver.id, socket.id);
+
+        notificationService.confirmConnection(socket, socket.id);
+      } else {
+        return notificationService.emitError(socket, 'Invalid role');
       }
     });
 
-    // RIDER REQUEST RIDE
-    socket.on('ride:request', (data) => {
-      const riderId = socket.data.riderId;
-      if (!riderId || !riders.has(riderId)) return emitError(socket, 'Rider not registered');
+    // RIDE FARE REQUEST
+    socket.on('ride_fare', async (data) => {
       const { pickup, destination } = data || {};
-      if (!pickup || !destination) return emitError(socket, 'Invalid ride or driver');
+      if (!pickup || !destination) {
+        return notificationService.emitError(socket, 'pickup and destination required');
+      }
+
+      const fareEstimates = fareService.calculateFareEstimates(pickup, destination);
+      notificationService.sendFareEstimate(socket, fareEstimates);
+    });
+
+    // RIDE REQUEST
+    socket.on('ride_request', async (data) => {
+      const userId = socket.data.userId;
+      if (!userId || socket.data.role !== 'customer') {
+        return notificationService.emitError(socket, 'Customer not connected');
+      }
+
+      const { pickup, destination, type, fareType, fareAmount } = data || {};
+      if (!pickup || !destination) {
+        return notificationService.emitError(socket, 'pickup and destination required');
+      }
+
+      // Create ride request in database
+      const rideRequest = await rideRequestService.createRideRequest(
+        models, 
+        userId, 
+        pickup, 
+        destination, 
+        fareType || type
+      );
 
       // Find nearby available drivers
-      const availableDrivers = [];
-      drivers.forEach((d) => {
-        if (d.status === 'available' && d.location) {
-          const dist = distanceKm(pickup, d.location);
-          if (dist <= SEARCH_RADIUS_KM) {
-            availableDrivers.push({ driverId: d.driverId, dist });
-          }
-        }
-      });
-      availableDrivers.sort((a, b) => a.dist - b.dist);
-
-      const rideId = generateRideId(riderId);
-      const totalDistance = distanceKm(pickup, destination);
-      const ride = {
-        id: rideId,
-        riderId,
-        pickup,
-        destination,
-        distance: parseFloat(totalDistance.toFixed(2)),
-        estimatedFare: fareEstimate(totalDistance),
-        status: 'searching',
-        assignedDriverId: null,
-        queue: availableDrivers.map((x) => x.driverId),
-        timeouts: { current: null },
-      };
-      rides.set(rideId, ride);
+      const nearbyDrivers = await driverMatchingService.findNearbyDrivers(models, pickup);
 
       // Inform rider
-      socket.emit('ride:searching', { rideId, driversFound: availableDrivers.length });
+      notificationService.notifyRideSearching(socket, rideRequest.id);
 
-      if (availableDrivers.length === 0) {
-        socket.emit('ride:no_drivers', { message: 'No drivers available in your area' });
-        ride.status = 'failed';
+      if (nearbyDrivers.length === 0) {
+        await handleNoDriversAvailable(rideRequest.id, userId);
         return;
       }
 
-      // request to first driver
-      sendRequestToNextDriver(io, ride);
-    });
-
-    // DRIVER ACCEPT RIDE
-    socket.on('ride:accept', (data) => {
-      const driverId = socket.data.driverId;
-      if (!driverId || !drivers.has(driverId)) return emitError(socket, 'Driver not registered');
-      const { rideId } = data || {};
-      const ride = rideId && rides.get(rideId);
-      if (!ride) return emitError(socket, 'Ride not found');
-      const driver = drivers.get(driverId);
-
-      if (ride.status !== 'searching' || driver.pendingRideId !== rideId) {
-        // Someone else already accepted
-        socket.emit('ride:already_accepted', { rideId });
-        return;
-      }
-
-      // Accept
-      ride.status = 'accepted';
-      ride.assignedDriverId = driverId;
-      driver.activeRideId = ride.id;
-      driver.pendingRideId = null;
-      driver.status = 'busy';
-
-      // clear timeout
-      if (ride.timeouts && ride.timeouts.current) {
-        clearTimeout(ride.timeouts.current);
-        ride.timeouts.current = null;
-      }
-
-      // notify driver
-      socket.emit('ride:accepted_confirm', {
-        rideId: ride.id,
-        pickup: ride.pickup,
-        destination: ride.destination,
-        riderId: ride.riderId,
+      // Store active ride data
+      activeRides.set(rideRequest.id, {
+        queue: nearbyDrivers.map((d) => d.driverId),
+        currentTimeout: null,
       });
 
-      // notify rider
-      const rider = riders.get(ride.riderId);
-      if (rider) {
-        const driverObj = drivers.get(driverId);
-        const riderSocket = getSocketById(io, rider.socketId);
+      // Start sending requests
+      await rideRequestService.sendRequestToNextDriver(
+        io, 
+        models, 
+        rideRequest, 
+        activeRides, 
+        driverSockets, 
+        notificationService.getSocketById
+      );
+    });
+
+    // RIDE ACCEPT (Driver)
+    socket.on('ride_accept', async (data) => {
+      const driverId = socket.data.driverId;
+      if (!driverId || socket.data.role !== 'driver') {
+        return notificationService.emitError(socket, 'Driver not connected');
+      }
+
+      const { requestId } = data || {};
+      const rideRequest = await rideRequestService.getRideRequest(models, requestId);
+
+      if (!rideRequest) {
+        return notificationService.emitError(socket, 'Ride request not found');
+      }
+
+      if (rideRequest.status !== 'searching') {
+        notificationService.notifyRideAlreadyAccepted(socket, requestId);
+        return;
+      }
+
+      // Accept the ride
+      await rideRequestService.acceptRideRequest(models, requestId, driverId);
+
+      // Clear timeout
+      const rideData = activeRides.get(requestId);
+      if (rideData && rideData.currentTimeout) {
+        clearTimeout(rideData.currentTimeout);
+      }
+      activeRides.delete(requestId);
+
+      // Get driver details
+      const driver = await driverMatchingService.getDriverDetails(models, driverId);
+
+      // Confirm to driver
+      notificationService.notifyDriverAssigned(socket, driverId, requestId);
+
+      // Notify rider
+      const riderSocketId = riderSockets.get(rideRequest.riderId);
+      if (riderSocketId) {
+        const riderSocket = notificationService.getSocketById(io, riderSocketId);
         if (riderSocket) {
-          // naive ETA based on straight-line distance at 30 km/h
-          let eta = 10;
-          try {
-            if (driverObj && driverObj.location && ride.pickup) {
-              const dkm = distanceKm(driverObj.location, ride.pickup);
-              eta = Math.max(1, Math.round((dkm / 30) * 60));
-            }
-          } catch (_) {}
-          riderSocket.emit('ride:accepted', {
-            rideId: ride.id,
-            driver: {
-              id: driverId,
-              location: driverObj?.location || null,
-              eta,
-            },
-          });
+          notificationService.notifyRiderAssigned(riderSocket, driver, requestId, rideRequest.riderId);
         }
       }
     });
 
-    // DRIVER DECLINE
-    socket.on('ride:decline', (data) => {
+    // UPDATE RIDE STATUS (Driver)
+    socket.on('update_ride_status', async (data) => {
       const driverId = socket.data.driverId;
-      if (!driverId || !drivers.has(driverId)) return emitError(socket, 'Driver not registered');
-      const { rideId } = data || {};
-      const ride = rideId && rides.get(rideId);
-      if (!ride) return; // silent
-      const driver = drivers.get(driverId);
-      if (driver.pendingRideId === rideId && ride.status === 'searching') {
-        driver.pendingRideId = null;
-        driver.status = 'available';
-        // move to next driver
-        sendRequestToNextDriver(io, ride);
+      if (!driverId || socket.data.role !== 'driver') {
+        return notificationService.emitError(socket, 'Driver not connected');
       }
+
+      const { requestId, status } = data || {};
+      
+      // Validate status
+      if (!rideStatusService.isValidStatus(status)) {
+        return notificationService.emitError(socket, 'Invalid status');
+      }
+
+      const rideRequest = await rideRequestService.getRideRequest(models, requestId);
+
+      if (!rideRequest || rideRequest.acceptedDriverId !== driverId) {
+        return notificationService.emitError(socket, 'Unauthorized or ride not found');
+      }
+
+      // Handle status update
+      const result = await rideStatusService.handleRideStatusUpdate(
+        models, 
+        rideRequest, 
+        driverId, 
+        status, 
+        data
+      );
+
+      // Send summary to rider if completed
+      if (result.tripCompleted) {
+        const riderSocketId = riderSockets.get(rideRequest.riderId);
+        if (riderSocketId) {
+          const riderSocket = notificationService.getSocketById(io, riderSocketId);
+          if (riderSocket) {
+            notificationService.sendRideSummary(riderSocket, requestId, result.fare);
+          }
+        }
+      }
+
+      // Notify rider of status update
+      const riderSocketId = riderSockets.get(rideRequest.riderId);
+      if (riderSocketId) {
+        const riderSocket = notificationService.getSocketById(io, riderSocketId);
+        if (riderSocket) {
+          const message = rideStatusService.getStatusMessage(status);
+          notificationService.notifyRideStatusUpdate(riderSocket, requestId, status, message);
+        }
+      }
+
+      // Confirm to driver
+      notificationService.confirmStatusUpdate(socket, requestId, status);
     });
 
-    // DRIVER START RIDE
-    socket.on('ride:start', (data) => {
+    // DRIVER LOCATION UPDATE
+    socket.on('driver_location_update', async (data) => {
       const driverId = socket.data.driverId;
-      if (!driverId || !drivers.has(driverId)) return emitError(socket, 'Driver not registered');
-      const { rideId } = data || {};
-      const ride = rideId && rides.get(rideId);
-      if (!ride) return emitError(socket, 'Ride not found');
-      if (ride.assignedDriverId !== driverId) return emitError(socket, 'Invalid ride or driver');
-      ride.status = 'in_progress';
-      socket.emit('ride:started_confirm', { rideId });
-      const rider = riders.get(ride.riderId);
-      if (rider) {
-        const riderSocket = getSocketById(io, rider.socketId);
-        riderSocket && riderSocket.emit('ride:started', { rideId });
+      if (!driverId || socket.data.role !== 'driver') {
+        return notificationService.emitError(socket, 'Driver not connected');
       }
-    });
 
-    // DRIVER COMPLETE RIDE
-    socket.on('ride:complete', (data) => {
-      const driverId = socket.data.driverId;
-      if (!driverId || !drivers.has(driverId)) return emitError(socket, 'Driver not registered');
-      const { rideId } = data || {};
-      const ride = rideId && rides.get(rideId);
-      if (!ride) return emitError(socket, 'Ride not found');
-      if (ride.assignedDriverId !== driverId) return emitError(socket, 'Invalid ride or driver');
-      ride.status = 'completed';
-      const fare = ride.estimatedFare || fareEstimate(ride.distance);
-      socket.emit('ride:completed_confirm', { rideId, fare });
-      const rider = riders.get(ride.riderId);
-      if (rider) {
-        const riderSocket = getSocketById(io, rider.socketId);
-        riderSocket && riderSocket.emit('ride:completed', { rideId, fare });
+      const { coords, heading } = data || {};
+      if (!coords || !coords.lat || !coords.lng) {
+        return notificationService.emitError(socket, 'coords required');
       }
-      // free driver
-      const driver = drivers.get(driverId);
-      if (driver) {
-        driver.activeRideId = null;
-        driver.status = 'available';
-      }
-    });
 
-    // RIDER CANCEL
-    socket.on('ride:cancel', (data) => {
-      const riderId = socket.data.riderId;
-      if (!riderId || !riders.has(riderId)) return emitError(socket, 'Rider not registered');
-      const { rideId } = data || {};
-      const ride = rideId && rides.get(rideId);
-      if (!ride) return emitError(socket, 'Ride not found');
-      if (ride.riderId !== riderId) return emitError(socket, 'Unauthorized');
+      // Handle location update with trip tracking
+      const result = await locationService.handleDriverLocationUpdate(
+        models, 
+        driverId, 
+        coords, 
+        heading
+      );
 
-      ride.status = 'cancelled';
-      socket.emit('ride:cancelled_confirm', { rideId });
-
-      // notify driver
-      if (ride.assignedDriverId) {
-        const driver = drivers.get(ride.assignedDriverId);
-        if (driver) {
-          const dSock = getSocketById(io, driver.socketId);
-          dSock && dSock.emit('ride:cancelled', { rideId });
-          driver.activeRideId = null;
-          driver.status = 'available';
+      // If driver has active trip, broadcast to rider
+      if (result.hasActiveTrip) {
+        const riderSocketId = riderSockets.get(result.riderId);
+        if (riderSocketId) {
+          const riderSocket = notificationService.getSocketById(io, riderSocketId);
+          if (riderSocket) {
+            notificationService.broadcastDriverLocation(
+              riderSocket, 
+              driverId, 
+              coords, 
+              new Date().toISOString()
+            );
+          }
         }
       }
     });
 
-    // RIDER ASK NEARBY DRIVERS
-    socket.on('drivers:nearby', (data) => {
-      const { location } = data || {};
-      if (!location) return emitError(socket, 'Invalid ride or driver');
-      const result = [];
-      drivers.forEach((d) => {
-        if (d.status === 'available' && d.location) {
-          const dist = distanceKm(location, d.location);
-          result.push({ id: d.driverId, location: d.location, distance: parseFloat(dist.toFixed(2)) });
-        }
-      });
-      result.sort((a, b) => a.distance - b.distance);
-      socket.emit('drivers:list', { drivers: result });
+    // GET DRIVER LOCATION (Rider)
+    socket.on('get_driver_location', async (data) => {
+      const userId = socket.data.userId;
+      if (!userId || socket.data.role !== 'customer') {
+        return notificationService.emitError(socket, 'Customer not connected');
+      }
+
+      const { driverId } = data || {};
+      
+      const locationData = await locationService.getDriverLocation(models, driverId);
+      notificationService.sendDriverLocation(socket, locationData);
     });
 
-    socket.on('disconnect', () => {
+    // DISCONNECT
+    socket.on('disconnect', async () => {
+      console.log(`Socket disconnected: ${socket.id}`);
+
       // If driver
-      if (socket.data.role === 'driver') {
+      if (socket.data.role === 'driver' && socket.data.driverId) {
         const driverId = socket.data.driverId;
-        const d = driverId && drivers.get(driverId);
-        if (d) {
-          d.status = 'offline';
-          d.socketId = null;
-          // notify rider if active ride
-          if (d.activeRideId) {
-            const ride = rides.get(d.activeRideId);
-            if (ride) {
-              const rider = riders.get(ride.riderId);
-              if (rider) {
-                const riderSocket = getSocketById(io, rider.socketId);
-                riderSocket && riderSocket.emit('driver:disconnected', { rideId: ride.id });
-              }
+        driverSockets.delete(driverId);
+
+        // Mark driver offline
+        await locationService.markDriverOffline(models, driverId);
+
+        // Check for active trips
+        const activeTrip = await rideStatusService.getActiveTrip(models, driverId);
+
+        if (activeTrip) {
+          const riderSocketId = riderSockets.get(activeTrip.userId);
+          if (riderSocketId) {
+            const riderSocket = notificationService.getSocketById(io, riderSocketId);
+            if (riderSocket) {
+              notificationService.notifyDriverDisconnected(riderSocket);
             }
           }
         }
       }
 
       // If rider
-      if (socket.data.role === 'rider') {
-        const riderId = socket.data.riderId;
-        const r = riderId && riders.get(riderId);
-        if (r) {
-          r.socketId = null; // mark offline but retain mapping
-        }
+      if (socket.data.role === 'customer' && socket.data.userId) {
+        riderSockets.delete(socket.data.userId);
       }
     });
   });

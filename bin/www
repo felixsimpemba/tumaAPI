@@ -28,7 +28,21 @@ var server = http.createServer(app);
 // Initialize Socket.IO ride management
 try {
   const initRideManagement = require('../sockets/rideManagement');
-  const io = initRideManagement(server);
+  const db = require('../config/db');
+  const models = {
+    User: db.User,
+    Driver: db.Driver,
+    Vehicle: db.Vehicle,
+    Trip: db.Trip,
+    Payment: db.Payment,
+    Notification: db.Notification,
+    Rating: db.Rating,
+    RideRequest: db.RideRequest,
+    RideRequestAttempt: db.RideRequestAttempt,
+    TripLocation: db.TripLocation,
+    DriverHeartbeat: db.DriverHeartbeat,
+  };
+  const io = initRideManagement(server, models);
   app.set('io', io); // optionally expose on app if needed elsewhere
   console.log('[sockets] Ride management WebSocket initialized');
 } catch (e) {

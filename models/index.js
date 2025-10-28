@@ -10,6 +10,10 @@ function initModels(sequelize) {
   const Otp = require('./otp')(sequelize, DataTypes);
   const Notification = require('./notification')(sequelize, DataTypes);
   const Rating = require('./rating')(sequelize, DataTypes);
+  const RideRequest = require('./rideRequest')(sequelize, DataTypes);
+  const RideRequestAttempt = require('./rideRequestAttempt')(sequelize, DataTypes);
+  const TripLocation = require('./tripLocation')(sequelize, DataTypes);
+  const DriverHeartbeat = require('./driverHeartbeat')(sequelize, DataTypes);
 
   // Associations
   // User relations
@@ -42,6 +46,28 @@ function initModels(sequelize) {
   Trip.hasMany(Rating, { foreignKey: 'tripId', as: 'ratings' });
   Rating.belongsTo(Trip, { foreignKey: 'tripId', as: 'trip' });
 
+  // RideRequest relations
+  User.hasMany(RideRequest, { foreignKey: 'riderId', as: 'rideRequests' });
+  RideRequest.belongsTo(User, { foreignKey: 'riderId', as: 'rider' });
+
+  Driver.hasMany(RideRequest, { foreignKey: 'acceptedDriverId', as: 'acceptedRideRequests' });
+  RideRequest.belongsTo(Driver, { foreignKey: 'acceptedDriverId', as: 'acceptedDriver' });
+
+  // RideRequestAttempt relations
+  RideRequest.hasMany(RideRequestAttempt, { foreignKey: 'rideRequestId', as: 'attempts' });
+  RideRequestAttempt.belongsTo(RideRequest, { foreignKey: 'rideRequestId', as: 'rideRequest' });
+
+  Driver.hasMany(RideRequestAttempt, { foreignKey: 'driverId', as: 'rideRequestAttempts' });
+  RideRequestAttempt.belongsTo(Driver, { foreignKey: 'driverId', as: 'driver' });
+
+  // TripLocation relations
+  Trip.hasMany(TripLocation, { foreignKey: 'tripId', as: 'locations' });
+  TripLocation.belongsTo(Trip, { foreignKey: 'tripId', as: 'trip' });
+
+  // DriverHeartbeat relations
+  Driver.hasMany(DriverHeartbeat, { foreignKey: 'driverId', as: 'heartbeats' });
+  DriverHeartbeat.belongsTo(Driver, { foreignKey: 'driverId', as: 'driver' });
+
   return {
     User,
     Driver,
@@ -51,6 +77,10 @@ function initModels(sequelize) {
     Otp,
     Notification,
     Rating,
+    RideRequest,
+    RideRequestAttempt,
+    TripLocation,
+    DriverHeartbeat,
     sequelize,
   };
 }

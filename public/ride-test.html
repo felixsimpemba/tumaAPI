@@ -1,0 +1,755 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ride Management Test UI</title>
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    // Fallback to CDN if local socket.io not available
+    if (typeof io === 'undefined') {
+      document.write('<script src="https://cdn.socket.io/4.5.4/socket.io.min.js"><\/script>');
+    }
+  </script>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      min-height: 100vh;
+      padding: 20px;
+    }
+
+    .container {
+      max-width: 1400px;
+      margin: 0 auto;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+    }
+
+    .panel {
+      background: white;
+      border-radius: 12px;
+      padding: 24px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.1);
+    }
+
+    .panel-header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 20px;
+      padding-bottom: 16px;
+      border-bottom: 2px solid #f0f0f0;
+    }
+
+    .panel-header h2 {
+      color: #333;
+      font-size: 24px;
+    }
+
+    .badge {
+      padding: 4px 12px;
+      border-radius: 20px;
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    .badge.rider {
+      background: #e3f2fd;
+      color: #1976d2;
+    }
+
+    .badge.driver {
+      background: #f3e5f5;
+      color: #7b1fa2;
+    }
+
+    .status {
+      display: inline-block;
+      padding: 6px 12px;
+      border-radius: 6px;
+      font-size: 14px;
+      font-weight: 600;
+      margin: 8px 0;
+    }
+
+    .status.connected {
+      background: #c8e6c9;
+      color: #2e7d32;
+    }
+
+    .status.disconnected {
+      background: #ffcdd2;
+      color: #c62828;
+    }
+
+    .status.searching {
+      background: #fff9c4;
+      color: #f57f17;
+      animation: pulse 1.5s infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.6; }
+    }
+
+    .form-group {
+      margin-bottom: 16px;
+    }
+
+    label {
+      display: block;
+      margin-bottom: 6px;
+      color: #555;
+      font-weight: 600;
+      font-size: 14px;
+    }
+
+    input, select, button {
+      width: 100%;
+      padding: 12px;
+      border: 2px solid #e0e0e0;
+      border-radius: 8px;
+      font-size: 14px;
+      transition: all 0.3s;
+    }
+
+    input:focus, select:focus {
+      outline: none;
+      border-color: #667eea;
+    }
+
+    button {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      border: none;
+      cursor: pointer;
+      font-weight: 600;
+      margin-top: 8px;
+    }
+
+    button:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+    }
+
+    button:disabled {
+      background: #ccc;
+      cursor: not-allowed;
+      transform: none;
+    }
+
+    button.secondary {
+      background: #f5f5f5;
+      color: #333;
+      border: 2px solid #e0e0e0;
+    }
+
+    button.secondary:hover {
+      background: #eeeeee;
+    }
+
+    button.danger {
+      background: #ef5350;
+    }
+
+    button.success {
+      background: #66bb6a;
+    }
+
+    .log-section {
+      margin-top: 20px;
+    }
+
+    .log-section h3 {
+      color: #333;
+      margin-bottom: 12px;
+      font-size: 16px;
+    }
+
+    .log-box {
+      background: #f5f5f5;
+      border: 2px solid #e0e0e0;
+      border-radius: 8px;
+      padding: 12px;
+      max-height: 300px;
+      overflow-y: auto;
+      font-family: 'Courier New', monospace;
+      font-size: 12px;
+    }
+
+    .log-entry {
+      padding: 6px;
+      margin-bottom: 4px;
+      border-radius: 4px;
+      word-wrap: break-word;
+    }
+
+    .log-entry.sent {
+      background: #e3f2fd;
+      border-left: 3px solid #1976d2;
+    }
+
+    .log-entry.received {
+      background: #f3e5f5;
+      border-left: 3px solid #7b1fa2;
+    }
+
+    .log-entry.error {
+      background: #ffebee;
+      border-left: 3px solid #c62828;
+    }
+
+    .log-entry.success {
+      background: #e8f5e9;
+      border-left: 3px solid #2e7d32;
+    }
+
+    .timestamp {
+      color: #999;
+      font-size: 10px;
+    }
+
+    .info-card {
+      background: #f8f9fa;
+      border-radius: 8px;
+      padding: 12px;
+      margin: 12px 0;
+    }
+
+    .info-card strong {
+      color: #667eea;
+    }
+
+    .coordinates {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+
+    .ride-request-card {
+      background: #fff3e0;
+      border: 2px solid #ff9800;
+      border-radius: 8px;
+      padding: 16px;
+      margin: 12px 0;
+    }
+
+    .ride-request-card h4 {
+      color: #e65100;
+      margin-bottom: 8px;
+    }
+
+    .button-group {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    .driver-info {
+      background: #e8f5e9;
+      border-radius: 8px;
+      padding: 12px;
+      margin: 12px 0;
+    }
+
+    @media (max-width: 1024px) {
+      .container {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <!-- RIDER PANEL -->
+    <div class="panel">
+      <div class="panel-header">
+        <h2>🧍‍♂️ Rider Panel</h2>
+        <span class="badge rider">Customer</span>
+      </div>
+
+      <div class="form-group">
+        <label>User ID</label>
+        <input type="text" id="riderUserId" value="2" placeholder="Enter user ID">
+      </div>
+
+      <button id="riderConnect" onclick="connectRider()">Connect as Rider</button>
+      <div class="status disconnected" id="riderStatus">Disconnected</div>
+
+      <div id="riderControls" style="display: none;">
+        <hr style="margin: 20px 0; border: none; border-top: 2px solid #f0f0f0;">
+
+        <h3 style="margin-bottom: 12px; color: #333;">Request Fare Estimate</h3>
+        <div class="form-group">
+          <label>Pickup Location</label>
+          <div class="coordinates">
+            <input type="number" id="farePickupLat" value="-15.4167" step="0.0001" placeholder="Latitude">
+            <input type="number" id="farePickupLng" value="28.2833" step="0.0001" placeholder="Longitude">
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label>Destination</label>
+          <div class="coordinates">
+            <input type="number" id="fareDestLat" value="-15.4333" step="0.0001" placeholder="Latitude">
+            <input type="number" id="fareDestLng" value="28.3000" step="0.0001" placeholder="Longitude">
+          </div>
+        </div>
+
+        <button onclick="requestFare()">Get Fare Estimate</button>
+
+        <div id="fareResult" style="display: none;" class="info-card">
+          <strong>Fare Estimates:</strong>
+          <div id="fareDetails"></div>
+        </div>
+
+        <hr style="margin: 20px 0; border: none; border-top: 2px solid #f0f0f0;">
+
+        <h3 style="margin-bottom: 12px; color: #333;">Request Ride</h3>
+        <div class="form-group">
+          <label>Ride Type</label>
+          <select id="rideType">
+            <option value="ride">Ride</option>
+            <option value="delivery">Delivery</option>
+          </select>
+        </div>
+
+        <button onclick="requestRide()">Request Ride</button>
+
+        <div id="rideStatus"></div>
+        <div id="driverInfo"></div>
+
+        <div id="rideActions" style="display: none;">
+          <button onclick="getDriverLocation()">Get Driver Location</button>
+        </div>
+      </div>
+
+      <div class="log-section">
+        <h3>📋 Activity Log</h3>
+        <div class="log-box" id="riderLog"></div>
+      </div>
+    </div>
+
+    <!-- DRIVER PANEL -->
+    <div class="panel">
+      <div class="panel-header">
+        <h2>🚗 Driver Panel</h2>
+        <span class="badge driver">Driver</span>
+      </div>
+
+      <div class="form-group">
+        <label>User ID (Driver's User ID)</label>
+        <input type="text" id="driverUserId" value="3" placeholder="Enter driver user ID">
+      </div>
+
+      <button id="driverConnect" onclick="connectDriver()">Connect as Driver</button>
+      <div class="status disconnected" id="driverStatus">Disconnected</div>
+
+      <div id="driverControls" style="display: none;">
+        <hr style="margin: 20px 0; border: none; border-top: 2px solid #f0f0f0;">
+
+        <h3 style="margin-bottom: 12px; color: #333;">Current Location</h3>
+        <div class="form-group">
+          <label>Location</label>
+          <div class="coordinates">
+            <input type="number" id="driverLat" value="40.0000" step="0.0001" placeholder="Latitude">
+            <input type="number" id="driverLng" value="-74.0000" step="0.0001" placeholder="Longitude">
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label>Heading (0-359 degrees)</label>
+          <input type="number" id="driverHeading" value="90" min="0" max="359" placeholder="Heading">
+        </div>
+
+        <button onclick="updateDriverLocation()">Update Location</button>
+        <button class="secondary" onclick="startAutoLocation()">Start Auto-Update (5s)</button>
+        <button class="secondary" onclick="stopAutoLocation()">Stop Auto-Update</button>
+
+        <hr style="margin: 20px 0; border: none; border-top: 2px solid #f0f0f0;">
+
+        <h3 style="margin-bottom: 12px; color: #333;">Ride Requests</h3>
+        <div id="rideRequests">
+          <p style="color: #999; text-align: center; padding: 20px;">Waiting for ride requests...</p>
+        </div>
+
+        <hr style="margin: 20px 0; border: none; border-top: 2px solid #f0f0f0;">
+
+        <h3 style="margin-bottom: 12px; color: #333;">Active Ride</h3>
+        <div id="activeRide">
+          <p style="color: #999; text-align: center; padding: 20px;">No active ride</p>
+        </div>
+      </div>
+
+      <div class="log-section">
+        <h3>📋 Activity Log</h3>
+        <div class="log-box" id="driverLog"></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let riderSocket = null;
+    let driverSocket = null;
+    let locationInterval = null;
+    let currentRequestId = null;
+    let activeRideRequestId = null;
+
+    // Utility functions
+    function log(panel, message, type = 'info') {
+      const logBox = document.getElementById(`${panel}Log`);
+      const entry = document.createElement('div');
+      entry.className = `log-entry ${type}`;
+      const timestamp = new Date().toLocaleTimeString();
+      entry.innerHTML = `<span class="timestamp">${timestamp}</span> ${message}`;
+      logBox.appendChild(entry);
+      logBox.scrollTop = logBox.scrollHeight;
+    }
+
+    // RIDER FUNCTIONS
+    function connectRider() {
+      const userId = document.getElementById('riderUserId').value;
+      if (!userId) {
+        alert('Please enter a user ID');
+        return;
+      }
+
+      riderSocket = io('http://localhost:3000', {
+        path: '/socket.io',
+        transports: ['websocket', 'polling']
+      });
+
+      riderSocket.on('connect', () => {
+        log('rider', 'Socket connected, sending user_connect event...', 'success');
+        riderSocket.emit('user_connect', {
+          userId: parseInt(userId),
+          role: 'customer'
+        });
+      });
+
+      riderSocket.on('connected', (data) => {
+        log('rider', `✅ Connected: ${JSON.stringify(data)}`, 'success');
+        document.getElementById('riderStatus').textContent = 'Connected';
+        document.getElementById('riderStatus').className = 'status connected';
+        document.getElementById('riderControls').style.display = 'block';
+        document.getElementById('riderConnect').disabled = true;
+      });
+
+      riderSocket.on('ride_fare', (data) => {
+        log('rider', `💰 Fare Estimate: ${JSON.stringify(data)}`, 'received');
+        const fareResult = document.getElementById('fareResult');
+        const fareDetails = document.getElementById('fareDetails');
+        fareResult.style.display = 'block';
+        
+        let html = '<div style="margin-top: 8px;">';
+        if (data.Economy || data.Classic) {
+          // Direct format (no nested data)
+          html += `<div style="margin: 8px 0;">
+            <label style="display: flex; align-items: center; cursor: pointer; padding: 8px; border: 2px solid #e0e0e0; border-radius: 8px; margin-bottom: 8px;">
+              <input type="radio" name="fareType" value="Economy" data-amount="${data.Economy.Amount}" checked style="margin-right: 8px; width: auto;">
+              <span><strong>Economy:</strong> ${data.Economy.Amount} (${data.Economy.Distance} km, ~${Math.round(data.Economy.EstTime)} min)</span>
+            </label>
+          </div>`;
+          html += `<div style="margin: 8px 0;">
+            <label style="display: flex; align-items: center; cursor: pointer; padding: 8px; border: 2px solid #e0e0e0; border-radius: 8px;">
+              <input type="radio" name="fareType" value="Classic" data-amount="${data.Classic.Amount}" style="margin-right: 8px; width: auto;">
+              <span><strong>Classic:</strong> ${data.Classic.Amount} (${data.Classic.Distance} km, ~${Math.round(data.Classic.EstTime)} min)</span>
+            </label>
+          </div>`;
+        } else if (data.data) {
+          // Nested format fallback
+          for (let [category, details] of Object.entries(data.data)) {
+            html += `<div style="margin: 8px 0;">
+              <label style="display: flex; align-items: center; cursor: pointer; padding: 8px; border: 2px solid #e0e0e0; border-radius: 8px; margin-bottom: 8px;">
+                <input type="radio" name="fareType" value="${category}" data-amount="${details.Amount}" ${category === 'Economy' ? 'checked' : ''} style="margin-right: 8px; width: auto;">
+                <span><strong>${category}:</strong> ${details.Amount} (${details.Distance} km, ~${Math.round(details.EstTime)} min)</span>
+              </label>
+            </div>`;
+          }
+        }
+        html += '</div>';
+        fareDetails.innerHTML = html;
+      });
+
+      riderSocket.on('ride_searching', (data) => {
+        log('rider', `🔍 Searching for drivers: ${JSON.stringify(data)}`, 'received');
+        currentRequestId = data.data.requestId;
+        const status = document.getElementById('rideStatus');
+        status.innerHTML = `<div class="status searching">Searching for drivers... Request ID: ${currentRequestId}</div>`;
+      });
+
+      riderSocket.on('ride_assigned', (data) => {
+        log('rider', `🚗 Driver Assigned: ${JSON.stringify(data)}`, 'success');
+        const driver = data.data.driver;
+        const driverInfo = document.getElementById('driverInfo');
+        driverInfo.innerHTML = `
+          <div class="driver-info">
+            <h4>Driver Found!</h4>
+            <p><strong>Name:</strong> ${driver.name || driver.user?.name || 'N/A'}</p>
+            <p><strong>Vehicle:</strong> ${driver.vehicle?.type || 'N/A'} - ${driver.vehicle?.color || 'N/A'}</p>
+            <p><strong>Plate:</strong> ${driver.vehicle?.plateNumber || 'N/A'}</p>
+          </div>
+        `;
+        document.getElementById('rideStatus').innerHTML = '<div class="status connected">Driver Assigned</div>';
+        document.getElementById('rideActions').style.display = 'block';
+      });
+
+      riderSocket.on('ride_status_update', (data) => {
+        log('rider', `📍 Status Update: ${data.data.status} - ${data.data.message}`, 'received');
+        document.getElementById('rideStatus').innerHTML = `
+          <div class="info-card">
+            <strong>Status:</strong> ${data.data.status}<br>
+            <strong>Message:</strong> ${data.data.message}
+          </div>
+        `;
+      });
+
+      riderSocket.on('driver_location', (data) => {
+        log('rider', `📍 Driver Location: lat ${data.data.coords.lat}, lng ${data.data.coords.lng}`, 'received');
+      });
+
+      riderSocket.on('ride_summary', (data) => {
+        log('rider', `✅ Ride Complete: ${JSON.stringify(data)}`, 'success');
+        document.getElementById('rideStatus').innerHTML = `
+          <div class="info-card" style="background: #e8f5e9;">
+            <strong>Ride Completed!</strong><br>
+            Fare: ${data.data.fare}<br>
+            Duration: ${data.data.duration || 'N/A'}
+          </div>
+        `;
+      });
+
+      riderSocket.on('no_drivers', (data) => {
+        log('rider', `❌ No drivers available: ${JSON.stringify(data)}`, 'error');
+        document.getElementById('rideStatus').innerHTML = '<div class="status disconnected">No drivers available</div>';
+      });
+
+      riderSocket.on('error', (data) => {
+        log('rider', `❌ Error: ${data.message}`, 'error');
+      });
+
+      riderSocket.on('disconnect', () => {
+        log('rider', '❌ Disconnected from server', 'error');
+        document.getElementById('riderStatus').textContent = 'Disconnected';
+        document.getElementById('riderStatus').className = 'status disconnected';
+      });
+    }
+
+    function requestFare() {
+      const pickup = {
+        lat: parseFloat(document.getElementById('farePickupLat').value),
+        lng: parseFloat(document.getElementById('farePickupLng').value),
+        address: 'Pickup Location'
+      };
+      const destination = {
+        lat: parseFloat(document.getElementById('fareDestLat').value),
+        lng: parseFloat(document.getElementById('fareDestLng').value),
+        address: 'Destination'
+      };
+
+      log('rider', `Requesting fare estimate...`, 'sent');
+      riderSocket.emit('ride_fare', { pickup, destination });
+    }
+
+    function requestRide() {
+      const pickup = {
+        lat: parseFloat(document.getElementById('farePickupLat').value),
+        lng: parseFloat(document.getElementById('farePickupLng').value),
+        address: 'Pickup Location'
+      };
+      const destination = {
+        lat: parseFloat(document.getElementById('fareDestLat').value),
+        lng: parseFloat(document.getElementById('fareDestLng').value),
+        address: 'Destination'
+      };
+      const type = document.getElementById('rideType').value;
+      
+      // Get selected fare type
+      const selectedFare = document.querySelector('input[name="fareType"]:checked');
+      const fareType = selectedFare ? selectedFare.value : 'Economy';
+      const fareAmount = selectedFare ? parseFloat(selectedFare.getAttribute('data-amount')) : null;
+
+      log('rider', `Requesting ride (${type}, ${fareType} fare)...`, 'sent');
+      riderSocket.emit('ride_request', { 
+        pickup, 
+        destination, 
+        type,
+        fareType,
+        fareAmount
+      });
+    }
+
+    function getDriverLocation() {
+      if (!currentRequestId) {
+        alert('No active ride request');
+        return;
+      }
+      log('rider', 'Requesting driver location...', 'sent');
+      riderSocket.emit('get_driver_location', { driverId: 1 });
+    }
+
+    // DRIVER FUNCTIONS
+    function connectDriver() {
+      const userId = document.getElementById('driverUserId').value;
+      if (!userId) {
+        alert('Please enter a user ID');
+        return;
+      }
+
+      driverSocket = io('http://localhost:3000', {
+        path: '/socket.io',
+        transports: ['websocket', 'polling']
+      });
+
+      driverSocket.on('connect', () => {
+        log('driver', 'Socket connected, sending user_connect event...', 'success');
+        driverSocket.emit('user_connect', {
+          userId: parseInt(userId),
+          role: 'driver'
+        });
+      });
+
+      driverSocket.on('connected', (data) => {
+        log('driver', `✅ Connected: ${JSON.stringify(data)}`, 'success');
+        document.getElementById('driverStatus').textContent = 'Connected';
+        document.getElementById('driverStatus').className = 'status connected';
+        document.getElementById('driverControls').style.display = 'block';
+        document.getElementById('driverConnect').disabled = true;
+      });
+
+      driverSocket.on('new_ride_request', (data) => {
+        log('driver', `🔔 New Ride Request: ${JSON.stringify(data)}`, 'received');
+        activeRideRequestId = data.requestId;
+        
+        const requestsDiv = document.getElementById('rideRequests');
+        requestsDiv.innerHTML = `
+          <div class="ride-request-card">
+            <h4>New Ride Request!</h4>
+            <p><strong>Request ID:</strong> ${data.requestId}</p>
+            <p><strong>Passenger:</strong> ${data.user?.name || 'N/A'} (${data.user?.rating || 'N/A'} ⭐)</p>
+            <p><strong>Distance:</strong> ${data.distance}</p>
+            <p><strong>Fare:</strong> ${data.fare}</p>
+            <p><strong>Expires in:</strong> ${data.expiresIn}s</p>
+            <div class="button-group">
+              <button class="success" onclick="acceptRide(${data.requestId})">Accept Ride</button>
+              <button class="danger" onclick="declineRide(${data.requestId})">Decline</button>
+            </div>
+          </div>
+        `;
+      });
+
+      driverSocket.on('ride_assigned', (data) => {
+        log('driver', `✅ Ride Accepted: ${JSON.stringify(data)}`, 'success');
+        document.getElementById('rideRequests').innerHTML = '<p style="color: #999; text-align: center; padding: 20px;">Waiting for ride requests...</p>';
+        
+        const activeRideDiv = document.getElementById('activeRide');
+        activeRideDiv.innerHTML = `
+          <div class="info-card">
+            <strong>Active Ride</strong><br>
+            Request ID: ${data.data.requestId}<br>
+            <div class="button-group" style="margin-top: 12px;">
+              <button onclick="updateRideStatus('accepted')">Mark Accepted</button>
+              <button onclick="updateRideStatus('arrived_at_pickup')">Arrived at Pickup</button>
+              <button onclick="updateRideStatus('ride_started')">Start Ride</button>
+              <button onclick="updateRideStatus('completed')">Complete Ride</button>
+            </div>
+          </div>
+        `;
+      });
+
+      driverSocket.on('ride_already_accepted', (data) => {
+        log('driver', `⚠️ Ride already accepted by another driver`, 'error');
+        document.getElementById('rideRequests').innerHTML = '<p style="color: #999; text-align: center; padding: 20px;">Waiting for ride requests...</p>';
+      });
+
+      driverSocket.on('status_updated', (data) => {
+        log('driver', `✅ Status Updated: ${data.data.status}`, 'success');
+      });
+
+      driverSocket.on('error', (data) => {
+        log('driver', `❌ Error: ${data.message}`, 'error');
+      });
+
+      driverSocket.on('disconnect', () => {
+        log('driver', '❌ Disconnected from server', 'error');
+        document.getElementById('driverStatus').textContent = 'Disconnected';
+        document.getElementById('driverStatus').className = 'status disconnected';
+      });
+    }
+
+    function updateDriverLocation() {
+      const coords = {
+        lat: parseFloat(document.getElementById('driverLat').value),
+        lng: parseFloat(document.getElementById('driverLng').value)
+      };
+      const heading = parseInt(document.getElementById('driverHeading').value);
+
+      log('driver', `Updating location: lat ${coords.lat}, lng ${coords.lng}`, 'sent');
+      driverSocket.emit('driver_location_update', { coords, heading });
+    }
+
+    function startAutoLocation() {
+      if (locationInterval) {
+        alert('Auto-update already running');
+        return;
+      }
+      log('driver', 'Started automatic location updates (every 5s)', 'success');
+      locationInterval = setInterval(() => {
+        // Simulate small movement
+        const lat = parseFloat(document.getElementById('driverLat').value) + (Math.random() - 0.5) * 0.001;
+        const lng = parseFloat(document.getElementById('driverLng').value) + (Math.random() - 0.5) * 0.001;
+        document.getElementById('driverLat').value = lat.toFixed(4);
+        document.getElementById('driverLng').value = lng.toFixed(4);
+        updateDriverLocation();
+      }, 5000);
+    }
+
+    function stopAutoLocation() {
+      if (locationInterval) {
+        clearInterval(locationInterval);
+        locationInterval = null;
+        log('driver', 'Stopped automatic location updates', 'success');
+      }
+    }
+
+    function acceptRide(requestId) {
+      log('driver', `Accepting ride: ${requestId}`, 'sent');
+      driverSocket.emit('ride_accept', { requestId });
+    }
+
+    function declineRide(requestId) {
+      log('driver', `Declining ride: ${requestId}`, 'sent');
+      // Note: decline functionality not in current API
+      document.getElementById('rideRequests').innerHTML = '<p style="color: #999; text-align: center; padding: 20px;">Waiting for ride requests...</p>';
+    }
+
+    function updateRideStatus(status) {
+      if (!activeRideRequestId) {
+        alert('No active ride');
+        return;
+      }
+      log('driver', `Updating ride status to: ${status}`, 'sent');
+      driverSocket.emit('update_ride_status', {
+        requestId: activeRideRequestId,
+        status: status,
+        timestamp: new Date().toISOString()
+      });
+
+      if (status === 'completed') {
+        document.getElementById('activeRide').innerHTML = '<p style="color: #999; text-align: center; padding: 20px;">No active ride</p>';
+        activeRideRequestId = null;
+      }
+    }
+  </script>
+</body>
+</html>
